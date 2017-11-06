@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "embedded-sql-test.h"
 
 void do_commit() {
@@ -5,8 +7,8 @@ void do_commit() {
 }
 
 #define SQLCHECK if(sqlca.sqlcode) { \
+	printf("SQLERROR(%d): '%s' '%.5s' %ld\n", __LINE__, sqlca.sqlerrm.sqlerrmc, sqlca.sqlstate, sqlca.sqlcode);\
 	do_commit(); \
-	printf("SQLERROR: '%s' '%.5s'\n", sqlca.sqlerrm.sqlerrmc, sqlca.sqlstate);\
 	return 1;\
 	}
 
@@ -133,6 +135,10 @@ int db_get_all_cats(db_get_all_cats_callback callback, void * callback_arg) {
 	EXEC SQL BEGIN DECLARE SECTION;
 		struct SQL_CAT sql_cat;
 		struct SQL_CAT_IND sql_cat_ind;
+		char cname[128];
+		int ccount;
+		int cindex;
+		int ctype;
 	EXEC SQL END DECLARE SECTION;
 
 	EXEC SQL DECLARE db_get_all_cats CURSOR FOR
@@ -141,6 +147,19 @@ int db_get_all_cats(db_get_all_cats_callback callback, void * callback_arg) {
 	
 	EXEC SQL OPEN db_get_all_cats;
 	SQLCHECK;
+	
+	EXEC SQL ALLOCATE DESCRIPTOR my_descriptor;
+	
+	EXEC SQL FETCH NEXT FROM db_get_all_cats INTO SQL DESCRIPTOR my_descriptor;
+	
+	EXEC SQL GET DESCRIPTOR my_descriptor :ccount = COUNT;
+	for(cindex=1; cindex<=ccount; ++cindex) {
+		EXEC SQL GET DESCRIPTOR my_descriptor VALUE :cindex :cname = NAME;
+		EXEC SQL GET DESCRIPTOR my_descriptor VALUE :cindex :ctype = TYPE;
+		printf("!!!!! %d %s %d\n", cindex, cname, ctype);
+	}
+	
+	EXEC SQL DEALLOCATE DESCRIPTOR my_descriptor;
 	
 	while(1) {
 		EXEC SQL FETCH db_get_all_cats INTO :sql_cat :sql_cat_ind;
@@ -157,6 +176,169 @@ int db_get_all_cats(db_get_all_cats_callback callback, void * callback_arg) {
 	EXEC SQL CLOSE db_get_all_cats;
 	SQLCHECK;
 	
+	EXEC SQL COMMIT;
+	return 0;
+}
+
+#define MAX_QUERY_LEN 1024
+
+// BAD IMPL (SQL INJECTION !!!)
+int db_get_filtered_cats(const cat_filter filter, db_get_all_cats_callback callback, void * callback_arg) {
+	
+	Cat cat;
+		
+	EXEC SQL BEGIN DECLARE SECTION;
+		char query [MAX_QUERY_LEN + 1] = { 0 };
+		struct SQL_CAT sql_cat;
+		struct SQL_CAT_IND sql_cat_ind;
+	EXEC SQL END DECLARE SECTION;
+	
+	strncpy(query, "SELECT ID,NAME,AGE,BREED_ID FROM CAT", MAX_QUERY_LEN);
+
+	if(filter.use_name || filter.age_op != NOT_USED) {
+		int and_needed = 0;
+		strncat(query, " WHERE ", MAX_QUERY_LEN - strlen(query));
+		if(filter.use_name) {
+			strncat(query, " NAME = '", MAX_QUERY_LEN - strlen(query));
+			strncat(query, filter.name, MAX_QUERY_LEN - strlen(query));
+			strncat(query, "' ", MAX_QUERY_LEN - strlen(query));
+			and_needed = 1;
+		}
+		if(filter.age_op != NOT_USED) {
+			if(and_needed) {
+				strncat(query, " AND ", MAX_QUERY_LEN - strlen(query));
+			}
+			strncat(query, " AGE ", MAX_QUERY_LEN - strlen(query));
+			switch(filter.age_op) {
+			case EQUAL:
+				strncat(query, "= ", MAX_QUERY_LEN - strlen(query));
+				break;
+			case NOT_EQUAL:
+				strncat(query, "!= ", MAX_QUERY_LEN - strlen(query));
+				break;
+			default:
+				return 1;
+				break;
+			// ... 
+			}
+			snprintf(&(query[strlen(query)]), MAX_QUERY_LEN - strlen(query), "%d", filter.age);
+			and_needed = 1;
+		}
+	}
+	
+	printf("DEBUG: QUERY='%s'\n", query);
+	
+	EXEC SQL PREPARE query FROM :query;
+	
+	EXEC SQL DECLARE db_get_filtered_cats CURSOR FOR
+			query;
+	SQLCHECK;
+		
+	EXEC SQL OPEN db_get_filtered_cats;
+	SQLCHECK;
+		
+	while(1) {
+		EXEC SQL FETCH db_get_filtered_cats INTO :sql_cat :sql_cat_ind;
+		if(sqlca.sqlcode) {
+			break;
+		}
+		fill_cat(&cat, sql_cat, sql_cat_ind);
+		if(callback != NULL) {
+			if(callback(&cat, callback_arg)) {
+				break;
+			}
+		}
+	}
+	EXEC SQL CLOSE db_get_filtered_cats;
+	SQLCHECK;
+		
+	EXEC SQL COMMIT;
+	return 0;
+}
+
+int db_get_filtered_cats2(const cat_filter filter, db_get_all_cats_callback callback, void * callback_arg) {
+	
+	Cat cat;
+		
+	EXEC SQL BEGIN DECLARE SECTION;
+		char query [MAX_QUERY_LEN + 1] = { 0 };
+		struct SQL_CAT sql_cat;
+		struct SQL_CAT_IND sql_cat_ind;
+		char sql_name[CAT_NAME_LEN] = { 0 };
+		int sql_age;
+	EXEC SQL END DECLARE SECTION;
+	
+	strncpy(query, "SELECT ID,NAME,AGE,BREED_ID FROM CAT", MAX_QUERY_LEN);
+
+	if(filter.use_name || filter.age_op != NOT_USED) {
+		int and_needed = 0;
+		strncat(query, " WHERE ", MAX_QUERY_LEN - strlen(query));
+		if(filter.use_name) {
+			strncat(query, " NAME = ?", MAX_QUERY_LEN - strlen(query));
+			and_needed = 1;
+		}
+		if(filter.age_op != NOT_USED) {
+			if(and_needed) {
+				strncat(query, " AND ", MAX_QUERY_LEN - strlen(query));
+			}
+			strncat(query, " AGE ", MAX_QUERY_LEN - strlen(query));
+			switch(filter.age_op) {
+			case EQUAL:
+				strncat(query, "= ", MAX_QUERY_LEN - strlen(query));
+				break;
+			case NOT_EQUAL:
+				strncat(query, "!= ", MAX_QUERY_LEN - strlen(query));
+				break;
+			default:
+				return 1;
+				break;
+			// ... 
+			}
+			strncat(query, "? ", MAX_QUERY_LEN - strlen(query));
+			and_needed = 1;
+		}
+	}
+	
+	strncpy(sql_name, filter.name, CAT_NAME_LEN);
+	sql_age = filter.age;
+	
+	printf("DEBUG: QUERY='%s'\n", query);
+	
+	EXEC SQL PREPARE query2 FROM :query;
+	
+	EXEC SQL DECLARE db_get_filtered_cats2 CURSOR FOR
+			query2;
+	SQLCHECK;
+	
+	if(filter.use_name && filter.age_op != NOT_USED) {
+		EXEC SQL OPEN db_get_filtered_cats2 USING :sql_name, :sql_age;
+	}
+	else if(filter.use_name && filter.age_op == NOT_USED) {
+		EXEC SQL OPEN db_get_filtered_cats2 USING :sql_name;
+	}
+	else if(!filter.use_name && filter.age_op != NOT_USED) {
+		EXEC SQL OPEN db_get_filtered_cats2 USING :sql_age;
+	}
+	else {
+		EXEC SQL OPEN db_get_filtered_cats2;
+	}
+	SQLCHECK;
+		
+	while(1) {
+		EXEC SQL FETCH db_get_filtered_cats2 INTO :sql_cat :sql_cat_ind;
+		if(sqlca.sqlcode) {
+			break;
+		}
+		fill_cat(&cat, sql_cat, sql_cat_ind);
+		if(callback != NULL) {
+			if(callback(&cat, callback_arg)) {
+				break;
+			}
+		}
+	}
+	EXEC SQL CLOSE db_get_filtered_cats2;
+	SQLCHECK;
+		
 	EXEC SQL COMMIT;
 	return 0;
 }

@@ -1,5 +1,6 @@
-#include<stdio.h>
+#include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
 #include "embedded-sql-test.h"
 
@@ -103,6 +104,50 @@ int main(int argc, char **argv) {
 	if (status) {
 		fprintf(stderr, "Error getting all cats2\n");
 		return 1;
+	}
+
+	printf("*** Getting filtered cats\n");
+	{
+		struct {
+			char * str;
+			age_compare_ops age_op;
+		} map[] = {{"==", EQUAL}, {"!=", NOT_EQUAL}};
+		char age_op[32] = { 0 };
+		cat_filter filter = { 1, "Пушок", EQUAL, 123 };
+		int i;
+		printf("Enter filter NAME: ");
+		fgets(filter.name, CAT_NAME_LEN, stdin);
+		filter.name[strlen(filter.name) - 1] = 0;
+		if(filter.name[0] == 0) {
+			filter.use_name = 0;
+		}
+		else {
+			filter.use_name = 1;
+		}
+		printf("Enter filter AGE OP: ");
+		fgets(age_op, 32, stdin);
+		age_op[strlen(age_op) - 1] = 0;
+		filter.age_op = NOT_USED;
+		for(i=0; i<sizeof(map)/sizeof(map[0]); ++i) {
+			if(strncmp(age_op, map[i].str, 32) == 0) {
+				filter.age_op = map[i].age_op;
+				break;
+			}
+		}
+		if(filter.age_op != NOT_USED) {
+			printf("Enter filter AGE: ");
+			scanf("%d", &(filter.age));
+		}
+		status = db_get_filtered_cats2(filter, my_fn, NULL);
+		if (status) {
+			fprintf(stderr, "Error getting filtered cats\n");
+			return 1;
+		}
+		status = db_get_filtered_cats2(filter, my_fn, NULL);
+		if (status) {
+			fprintf(stderr, "Error getting filtered cats\n");
+			return 1;
+		}
 	}
 
 	return 0;
